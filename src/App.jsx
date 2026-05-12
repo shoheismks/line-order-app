@@ -1,0 +1,645 @@
+import { useEffect, useMemo, useState } from "react";
+import liff from "@line/liff";
+import {
+  Minus,
+  Plus,
+  ShoppingCart,
+  History,
+  Send,
+  CheckCircle2,
+  AlertCircle,
+  Search,
+  RotateCcw
+} from "lucide-react";
+import { fetchProductsFromMaster } from "./productApi.js";
+
+const LIFF_ID = import.meta.env.VITE_LIFF_ID || "";
+const ORDER_API_URL = import.meta.env.VITE_ORDER_API_URL || "";
+const DEMO_MODE = String(import.meta.env.VITE_DEMO_MODE ?? "true") === "true";
+
+function getCustomerIdFromUrl() {
+  const params = new URLSearchParams(window.location.search);
+  return params.get("customerId") || "CUST-A";
+}
+
+const demoLastOrder = {
+  deliveryDateLabel: "前回：金曜午前",
+  items: [
+    { productId: "BACON-45", quantity: 2 },
+    { productId: "PATTY-5K", quantity: 5 },
+    { productId: "PICKLE-5G", quantity: 1 },
+    { productId: "BUNS-CASE", quantity: 3 }
+  ]
+};
+
+function formatJPY(value) {
+  return new Intl.NumberFormat("ja-JP", {
+    style: "currency",
+    currency: "JPY"
+  }).format(value);
+}
+
+function calculateShippingFee(customer, productSubtotal) {
+  const rule = customer?.shippingRule || "固定";
+  const baseFee = Number(customer?.shippingFee || 0);
+  const freeLine = Number(customer?.freeShippingLine || 0);
+
+  if (rule === "無料") return 0;
+  if (rule === "都度") return 0;
+  if (freeLine > 0 && productSubtotal >= freeLine) return 0;
+
+  return baseFee;
+}
+
+function formatDateKey(date) {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, "0");
+  const d = String(date.getDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+}
+
+function getMinDeliveryDate(customer) {
+  const leadDays = Number(customer?.deliverySettings?.leadDays || 1);
+  const d = new Date();
+  d.setDate(d.getDate() + leadDays);
+  return formatDateKey(d);
+}
+
+function isDeliveryDateAllowed(customer, dateText) {
+  if (!dateText) return { ok: false, reason: "納品希望日を選択してください。" };
+
+  const settings = customer?.deliverySettings || {};
+  const date = new Date(`${dateText}T00:00:00`);
+  if (Number.isNaN(date.getTime())) return { ok: false, reason: "日付形式が正しくありません。" };
+
+  const minDateText = getMinDeliveryDate(customer);
+  if (dateText < minDateText) {
+    return { ok: false, reason: `最短納品日は${minDateText}以降です。` };
+  }
+
+  const allowedWeekdays = settings.allowedWeekdays || [1, 2, 3, 4, 5];
+  if (!allowedWeekdays.includes(date.getDay())) {
+    return { ok: false, reason: "この曜日は配送不可です。" };
+  }
+
+  const noDeliveryDates = settings.noDeliveryDates || [];
+  if (noDeliveryDates.includes(dateText)) {
+    return { ok: false, reason: "この日は配送不可日に設定されています。" };
+  }
+
+  return { ok: true, reason: "" };
+}
+
+function getDeliveryRuleText(customer) {
+  const settings = customer?.deliverySettings || {};
+  const names = ["日", "月", "火", "水", "木", "金", "土"];
+  const allowed = (settings.allowedWeekdays || [1, 2, 3, 4, 5]).map((d) => names[d]).join("・");
+  const leadDays = Number(settings.leadDays || 1);
+  return `配送可能曜日：${allowed} / 最短リード：${leadDays}日`;
+}
+
+function getTomorrowIso() {
+  const d = new Date();
+  d.setDate(d.getDate() + 1);
+  return d.toISOString().slice(0, 10);
+}
+
+function getRelativeDate(days) {
+  const d = new Date();
+  d.setDate(d.getDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+
+function buildOrderMessage(order) {
+  const lines = order.items.map((item) => {
+    return `・${item.name}：${item.quantity}${item.unit}`;
+  });
+
+  return [
+    "ご注文ありがとうございます。",
+    "下記内容で受付しました。",
+    "",
+    ...lines,
+    "",
+    `納品希望日：${order.deliveryDate}`,
+    `時間帯：${order.deliveryTime}`,
+    "",
+    `商品小計：${formatJPY(order.productSubtotal || 0)}`,
+    `送料：${formatJPY(order.shippingFee || 0)}`,
+    `合計：${formatJPY(order.totalAmount || 0)}`,
+    order.note ? `備考：${order.note}` : "",
+    "",
+    "在庫確認後、確定連絡いたします。"
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+export default function App() {
+  const [profile, setProfile] = useState({
+    userId: "demo-user-001",
+    displayName: "A商店",
+    pictureUrl: ""
+  });
+  const [customerId] = useState(getCustomerIdFromUrl());
+  const [customer, setCustomer] = useState({ customerId: "CUST-A", customerName: "A商店" });
+  const [products, setProducts] = useState([]);
+  const [productSource, setProductSource] = useState("loading");
+  const [productError, setProductError] = useState("");
+  const [isLiffReady, setIsLiffReady] = useState(false);
+  const [liffError, setLiffError] = useState("");
+  const [screen, setScreen] = useState("order");
+  const [query, setQuery] = useState("");
+  const [quantities, setQuantities] = useState({});
+  const [deliveryDate, setDeliveryDate] = useState(getTomorrowIso());
+  const [deliveryTime, setDeliveryTime] = useState("午前");
+  const [note, setNote] = useState("");
+  const [deliveryDateError, setDeliveryDateError] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [submitResult, setSubmitResult] = useState(null);
+
+  useEffect(() => {
+    async function initLiff() {
+      if (!LIFF_ID || DEMO_MODE) {
+        setIsLiffReady(true);
+        return;
+      }
+
+      try {
+        await liff.init({ liffId: LIFF_ID });
+
+        if (!liff.isLoggedIn()) {
+          liff.login();
+          return;
+        }
+
+        const lineProfile = await liff.getProfile();
+        setProfile(lineProfile);
+        setIsLiffReady(true);
+      } catch (error) {
+        setLiffError(error?.message || "LIFF初期化に失敗しました");
+        setIsLiffReady(true);
+      }
+    }
+
+    initLiff();
+  }, [customerId]);
+
+  useEffect(() => {
+    async function loadProducts() {
+      const result = await fetchProductsFromMaster(ORDER_API_URL, customerId);
+      setProducts(result.products);
+      setCustomer(result.customer || { customerId, customerName: profile.displayName || "A商店" });
+      setProfile((current) => ({
+        ...current,
+        displayName: result.customer?.customerName || current.displayName
+      }));
+      setProductSource(result.source);
+      setProductError(result.error || "");
+    }
+
+    loadProducts();
+  }, [customerId]);
+
+  useEffect(() => {
+    if (customer?.deliverySettings) {
+      const minDate = getMinDeliveryDate(customer);
+      if (!deliveryDate || deliveryDate < minDate) {
+        setDeliveryDate(minDate);
+      }
+    }
+  }, [customer, deliveryDate]);
+
+  const filteredProducts = useMemo(() => {
+    const normalized = query.trim().toLowerCase();
+    if (!normalized) return products;
+    return products.filter((product) => {
+      return [product.name, product.spec, product.category, product.id]
+        .join(" ")
+        .toLowerCase()
+        .includes(normalized);
+    });
+  }, [query]);
+
+  const orderItems = useMemo(() => {
+    return products
+      .map((product) => ({
+        ...product,
+        quantity: Number(quantities[product.id] || 0),
+        subtotal: Number(quantities[product.id] || 0) * product.price
+      }))
+      .filter((item) => item.quantity > 0);
+  }, [quantities]);
+
+  const productSubtotal = useMemo(() => {
+    return orderItems.reduce((sum, item) => sum + item.subtotal, 0);
+  }, [orderItems]);
+
+  const shippingFee = useMemo(() => {
+    return calculateShippingFee(customer, productSubtotal);
+  }, [customer, productSubtotal]);
+
+  const totalAmount = productSubtotal + shippingFee;
+
+  function updateQuantity(productId, delta) {
+    const product = products.find((p) => p.id === productId);
+    const maxQty = Number(product?.availableStock ?? 999999);
+
+    if (product && product.canOrder === false) return;
+
+    setQuantities((current) => {
+      const next = Math.min(maxQty, Math.max(0, Number(current[productId] || 0) + delta));
+      return { ...current, [productId]: next };
+    });
+  }
+
+  function setQuantity(productId, value) {
+    const product = products.find((p) => p.id === productId);
+    const maxQty = Number(product?.availableStock ?? 999999);
+    const parsed = Math.min(maxQty, Math.max(0, Number(value || 0)));
+    setQuantities((current) => ({ ...current, [productId]: parsed }));
+  }
+
+  function applyLastOrder() {
+    const next = {};
+    demoLastOrder.items.forEach((item) => {
+      next[item.productId] = item.quantity;
+    });
+    setQuantities(next);
+    setScreen("confirm");
+  }
+
+  function clearOrder() {
+    setQuantities({});
+    setNote("");
+    setDeliveryDate(getTomorrowIso());
+    setDeliveryTime("午前");
+    setSubmitResult(null);
+    setScreen("order");
+  }
+
+  async function submitOrder() {
+    if (orderItems.length === 0) {
+      setSubmitResult({
+        ok: false,
+        message: "商品が選択されていません。数量を入力してください。"
+      });
+      return;
+    }
+
+    const deliveryCheck = isDeliveryDateAllowed(customer, deliveryDate);
+    if (!deliveryCheck.ok) {
+      setDeliveryDateError(deliveryCheck.reason);
+      setSubmitResult({
+        ok: false,
+        message: deliveryCheck.reason
+      });
+      return;
+    }
+
+    setDeliveryDateError("");
+    setSubmitting(true);
+    setSubmitResult(null);
+
+    const order = {
+      orderId: `ORD-${Date.now()}`,
+      orderedAt: new Date().toISOString(),
+      customer: {
+        customerId,
+        lineUserId: profile.userId,
+        displayName: customer.customerName || profile.displayName
+      },
+      deliveryDate,
+      deliveryTime,
+      note,
+      items: orderItems.map((item) => ({
+        productId: item.id,
+        name: item.name,
+        spec: item.spec,
+        unit: item.unit,
+        quantity: item.quantity,
+        unitPrice: item.price,
+        subtotal: item.subtotal
+      })),
+      productSubtotal,
+      shippingFee,
+      totalAmount
+    };
+
+    try {
+      if (ORDER_API_URL) {
+        const response = await fetch(ORDER_API_URL, {
+          method: "POST",
+          mode: "no-cors",
+          headers: {
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify(order)
+        });
+
+        // Google Apps Script + no-corsではレスポンス本文を読めないため、送信成功として扱います。
+        void response;
+      } else {
+        console.info("DEMO ORDER", order);
+      }
+
+      const message = buildOrderMessage({
+        ...order,
+        deliveryDate,
+        deliveryTime,
+        items: orderItems
+      });
+
+      if (!DEMO_MODE && LIFF_ID && liff.isInClient() && liff.isApiAvailable("sendMessages")) {
+        await liff.sendMessages([{ type: "text", text: message }]);
+      }
+
+      setSubmitResult({
+        ok: true,
+        message,
+        order
+      });
+      setScreen("done");
+    } catch (error) {
+      setSubmitResult({
+        ok: false,
+        message: error?.message || "注文送信に失敗しました。"
+      });
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  if (!isLiffReady) {
+    return (
+      <div className="app-shell center">
+        <div className="loading-card">読み込み中...</div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="app-shell">
+      <header className="topbar">
+        <div>
+          <p className="eyebrow">LINE発注ミニアプリ</p>
+          <h1>{customer.customerName || profile.displayName || "取引先"} 様</h1>
+        </div>
+        <div className="pill">{productSource === "master" ? "MASTER" : (DEMO_MODE ? "DEMO" : "LIFF")}</div>
+      </header>
+
+      {liffError && (
+        <div className="notice error">
+          <AlertCircle size={18} />
+          <span>{liffError}</span>
+        </div>
+      )}
+
+      {productSource === "master" && (
+        <div className="notice success">
+          <CheckCircle2 size={18} />
+          <span>{customer.customerName} 専用の商品・価格を読み込みました。顧客ID: {customerId}</span>
+        </div>
+      )}
+
+      {productSource === "master" && (
+        <div className="notice info">
+          <AlertCircle size={18} />
+          <span>{getDeliveryRuleText(customer)}</span>
+        </div>
+      )}
+
+      {productError && (
+        <div className="notice warning">
+          <AlertCircle size={18} />
+          <span>{productError} デモ用の商品一覧で表示しています。</span>
+        </div>
+      )}
+
+      <nav className="quick-actions">
+        <button type="button" onClick={applyLastOrder}>
+          <History size={18} />
+          前回と同じ
+        </button>
+        <button type="button" onClick={() => setScreen("order")}>
+          <ShoppingCart size={18} />
+          商品選択
+        </button>
+        <button type="button" onClick={clearOrder}>
+          <RotateCcw size={18} />
+          リセット
+        </button>
+      </nav>
+
+      {screen === "order" && (
+        <main className="card">
+          <section className="section-title">
+            <h2>商品を選択</h2>
+            <p>よく注文する商品を上に表示しています。</p>
+          </section>
+
+          <label className="search-box">
+            <Search size={18} />
+            <input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="商品名・カテゴリで検索"
+            />
+          </label>
+
+          <div className="product-list">
+            {filteredProducts.length === 0 && (
+              <div className="empty">表示できる商品がありません。商品マスタを確認してください。</div>
+            )}
+
+            {filteredProducts
+              .slice()
+              .sort((a, b) => Number(b.frequent) - Number(a.frequent))
+              .map((product) => {
+                const quantity = Number(quantities[product.id] || 0);
+                return (
+                  <article className={`product ${quantity > 0 ? "selected" : ""}`} key={product.id}>
+                    <div className="product-main">
+                      <div>
+                        <div className="product-name">
+                          {product.name}
+                          {product.frequent && <span>定番</span>}
+                        </div>
+                        <p>{product.spec}</p>
+                        <strong>{formatJPY(product.price)} / {product.unit}</strong>
+                        <div className={`stock-badge ${product.canOrder ? "ok" : "ng"}`}>
+                          {product.stockStatus || "未設定"} / フリー在庫 {product.availableStock ?? 0}{product.unit}
+                        </div>
+                      </div>
+                    </div>
+                    <div className="quantity-control">
+                      <button type="button" disabled={!product.canOrder} onClick={() => updateQuantity(product.id, -1)}>
+                        <Minus size={18} />
+                      </button>
+                      <input
+                        type="number"
+                        min="0"
+                        value={quantity}
+                        disabled={!product.canOrder}
+                        onChange={(e) => setQuantity(product.id, e.target.value)}
+                      />
+                      <button type="button" disabled={!product.canOrder} onClick={() => updateQuantity(product.id, 1)}>
+                        <Plus size={18} />
+                      </button>
+                    </div>
+                  </article>
+                );
+              })}
+          </div>
+
+          <div className="sticky-summary">
+            <div>
+              <span>選択中</span>
+              <strong>{orderItems.length}商品 / {formatJPY(totalAmount)}</strong>
+            </div>
+            <button type="button" className="primary" onClick={() => setScreen("confirm")}>
+              注文確認へ
+            </button>
+          </div>
+        </main>
+      )}
+
+      {screen === "confirm" && (
+        <main className="card">
+          <section className="section-title">
+            <h2>注文内容確認</h2>
+            <p>納品希望日と時間帯を指定してください。</p>
+          </section>
+
+          {orderItems.length === 0 ? (
+            <div className="empty">商品が選択されていません。</div>
+          ) : (
+            <div className="order-lines">
+              {orderItems.map((item) => (
+                <div className="order-line" key={item.id}>
+                  <div>
+                    <strong>{item.name}</strong>
+                    <p>{item.quantity}{item.unit} × {formatJPY(item.price)}</p>
+                  </div>
+                  <span>{formatJPY(item.subtotal)}</span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <div className="form-grid">
+            <label>
+              納品希望日
+              <input
+                type="date"
+                value={deliveryDate}
+                min={getMinDeliveryDate(customer)}
+                onChange={(e) => {
+                  const value = e.target.value;
+                  setDeliveryDate(value);
+                  const result = isDeliveryDateAllowed(customer, value);
+                  setDeliveryDateError(result.ok ? "" : result.reason);
+                }}
+              />
+              {deliveryDateError && <small className="field-error">{deliveryDateError}</small>}
+            </label>
+
+            <div className="date-buttons">
+              <button type="button" onClick={() => {
+                const d = getRelativeDate(1);
+                setDeliveryDate(d);
+                const r = isDeliveryDateAllowed(customer, d);
+                setDeliveryDateError(r.ok ? "" : r.reason);
+              }}>明日</button>
+              <button type="button" onClick={() => {
+                const d = getRelativeDate(2);
+                setDeliveryDate(d);
+                const r = isDeliveryDateAllowed(customer, d);
+                setDeliveryDateError(r.ok ? "" : r.reason);
+              }}>明後日</button>
+              <button type="button" onClick={() => {
+                const d = getRelativeDate(3);
+                setDeliveryDate(d);
+                const r = isDeliveryDateAllowed(customer, d);
+                setDeliveryDateError(r.ok ? "" : r.reason);
+              }}>3日後</button>
+            </div>
+
+            <label>
+              時間帯
+              <select value={deliveryTime} onChange={(e) => setDeliveryTime(e.target.value)}>
+                <option>午前</option>
+                <option>午後</option>
+                <option>指定なし</option>
+              </select>
+            </label>
+
+            <label>
+              備考
+              <textarea
+                value={note}
+                onChange={(e) => setNote(e.target.value)}
+                placeholder="例：いつもの搬入口へ、欠品時は代替相談希望など"
+              />
+            </label>
+          </div>
+
+          <div className="total-box">
+            <div className="price-row">
+              <span>商品小計</span>
+              <strong>{formatJPY(productSubtotal)}</strong>
+            </div>
+            <div className="price-row">
+              <span>送料</span>
+              <strong>{formatJPY(shippingFee)}</strong>
+            </div>
+            {customer.freeShippingLine > 0 && shippingFee > 0 && (
+              <small>送料無料ライン：{formatJPY(customer.freeShippingLine)}</small>
+            )}
+            {customer.shippingRule === "都度" && (
+              <small>送料は都度確認です。注文後に担当者より確定連絡します。</small>
+            )}
+            <div className="price-row total">
+              <span>合計金額</span>
+              <strong>{formatJPY(totalAmount)}</strong>
+            </div>
+            <small>実際の請求額は在庫・単価確認後に確定します。</small>
+          </div>
+
+          {submitResult && !submitResult.ok && (
+            <div className="notice error">
+              <AlertCircle size={18} />
+              <span>{submitResult.message}</span>
+            </div>
+          )}
+
+          <div className="button-row">
+            <button type="button" className="secondary" onClick={() => setScreen("order")}>
+              戻る
+            </button>
+            <button type="button" className="primary" disabled={submitting} onClick={submitOrder}>
+              <Send size={18} />
+              {submitting ? "送信中..." : "注文を送信"}
+            </button>
+          </div>
+        </main>
+      )}
+
+      {screen === "done" && (
+        <main className="card success-card">
+          <CheckCircle2 size={52} />
+          <h2>注文を受付しました</h2>
+          <p>在庫確認後、担当者より確定連絡を行います。</p>
+
+          {submitResult?.message && (
+            <pre className="message-preview">{submitResult.message}</pre>
+          )}
+
+          <button type="button" className="primary full" onClick={clearOrder}>
+            新しい注文を作成
+          </button>
+        </main>
+      )}
+    </div>
+  );
+}
