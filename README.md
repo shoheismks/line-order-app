@@ -283,3 +283,26 @@ CUST-B / 月〜土 true / 日 false / 祝日配送 false / 最短リード 1
 
 注文送信時にもApps Script側で再チェックします。
 アプリ側だけでなくサーバー側でも弾くので、安全です。
+
+
+## 日本語 / 英語切り替え
+
+画面右上の `English` / `日本語` ボタンでUI言語を切り替えられます。
+
+URLパラメータでも指定できます。
+
+```text
+https://your-app.vercel.app/?customerId=CUST-A&lang=ja
+https://your-app.vercel.app/?customerId=CUST-A&lang=en
+```
+
+切り替え対象:
+
+- 画面ラベル
+- ボタン
+- 注文確認画面
+- 注文完了画面
+- 配送ルール表示
+- 在庫表示文言
+
+商品名・顧客名はスプレッドシートの登録内容をそのまま表示します。

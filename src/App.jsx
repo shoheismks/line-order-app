@@ -17,6 +17,153 @@ const LIFF_ID = import.meta.env.VITE_LIFF_ID || "";
 const ORDER_API_URL = import.meta.env.VITE_ORDER_API_URL || "";
 const DEMO_MODE = String(import.meta.env.VITE_DEMO_MODE ?? "true") === "true";
 
+
+const translations = {
+  ja: {
+    appTitle: "LINE発注ミニアプリ",
+    demo: "DEMO",
+    master: "MASTER",
+    customerSuffix: "様",
+    sameAsLast: "{t.sameAsLast}",
+    selectProducts: "{t.selectProducts}",
+    reset: "{t.reset}",
+    loadedMaster: (customerName, customerId) => `${customerName} 専用の商品・価格を読み込みました。顧客ID: ${customerId}`,
+    deliveryRule: (text) => text,
+    fallbackProducts: "デモ用の商品一覧で表示しています。",
+    chooseProducts: "商品を選択",
+    frequentProducts: "よく注文する商品を上に表示しています。",
+    searchPlaceholder: "商品名・カテゴリで検索",
+    frequent: "定番",
+    noProducts: "表示できる商品がありません。商品マスタを確認してください。",
+    selected: "選択中",
+    orderConfirm: "{t.orderConfirm}",
+    confirmTitle: "注文内容確認",
+    confirmDesc: "納品希望日と時間帯を指定してください。",
+    noProductSelected: "商品が選択されていません。",
+    deliveryDate: "納品希望日",
+    tomorrow: "明日",
+    dayAfterTomorrow: "明後日",
+    threeDaysLater: "3日後",
+    deliveryTime: "時間帯",
+    morning: "午前",
+    afternoon: "午後",
+    noPreference: "指定なし",
+    note: "備考",
+    notePlaceholder: "例：いつもの搬入口へ、欠品時は代替相談希望など",
+    productSubtotal: "商品小計",
+    shippingFee: "送料",
+    freeShippingLine: "送料無料ライン",
+    shippingByCase: "送料は都度確認です。注文後に担当者より確定連絡します。",
+    grandTotal: "合計金額",
+    finalAmountNote: "実際の請求額は在庫・単価確認後に確定します。",
+    back: "{t.back}",
+    sending: "送信中...",
+    submitOrder: "注文を送信",
+    orderReceived: "注文を受付しました",
+    orderReceivedDesc: "在庫確認後、担当者より確定連絡を行います。",
+    newOrder: "{t.newOrder}",
+    stockFree: (status, qty, unit) => `${status || "未設定"} / フリー在庫 ${qty ?? 0}${unit}`,
+    deliveryAllowed: "配送可能曜日",
+    leadDays: "最短リード",
+    days: "日",
+    weekdays: ["日", "月", "火", "水", "木", "金", "土"],
+    chooseDeliveryDate: "納品希望日を選択してください。",
+    invalidDate: "日付形式が正しくありません。",
+    minDeliveryDate: (date) => `最短納品日は${date}以降です。`,
+    weekdayUnavailable: "この曜日は配送不可です。",
+    noDeliveryDate: "この日は配送不可日に設定されています。",
+    noItemError: "商品が選択されていません。数量を入力してください。",
+    thankYou: "ご注文ありがとうございます。",
+    accepted: "下記内容で受付しました。",
+    deliveryDateLabel: "納品希望日",
+    deliveryTimeLabel: "時間帯",
+    productSubtotalLabel: "商品小計",
+    shippingLabel: "送料",
+    totalLabel: "合計",
+    noteLabel: "備考",
+    contactAfterStock: "在庫確認後、確定連絡いたします。",
+    language: "English"
+  },
+  en: {
+    appTitle: "LINE Order Mini App",
+    demo: "DEMO",
+    master: "MASTER",
+    customerSuffix: "",
+    sameAsLast: "Repeat last order",
+    selectProducts: "Select items",
+    reset: "Reset",
+    loadedMaster: (customerName, customerId) => `Loaded dedicated products and prices for ${customerName}. Customer ID: ${customerId}`,
+    deliveryRule: (text) => text,
+    fallbackProducts: "Showing demo products instead.",
+    chooseProducts: "Select products",
+    frequentProducts: "Frequently ordered items are shown first.",
+    searchPlaceholder: "Search by product name or category",
+    frequent: "Frequent",
+    noProducts: "No products available. Please check the product master.",
+    selected: "Selected",
+    orderConfirm: "Review order",
+    confirmTitle: "Order confirmation",
+    confirmDesc: "Please select the requested delivery date and time slot.",
+    noProductSelected: "No product selected.",
+    deliveryDate: "Requested delivery date",
+    tomorrow: "Tomorrow",
+    dayAfterTomorrow: "Day after tomorrow",
+    threeDaysLater: "In 3 days",
+    deliveryTime: "Time slot",
+    morning: "Morning",
+    afternoon: "Afternoon",
+    noPreference: "No preference",
+    note: "Notes",
+    notePlaceholder: "e.g. Use the usual delivery entrance, contact us if an item is short",
+    productSubtotal: "Product subtotal",
+    shippingFee: "Shipping fee",
+    freeShippingLine: "Free shipping threshold",
+    shippingByCase: "Shipping fee will be confirmed case by case after order submission.",
+    grandTotal: "Total",
+    finalAmountNote: "Final billing amount will be confirmed after stock and price check.",
+    back: "Back",
+    sending: "Sending...",
+    submitOrder: "Submit order",
+    orderReceived: "Order received",
+    orderReceivedDesc: "We will confirm stock and contact you with the final confirmation.",
+    newOrder: "Create new order",
+    stockFree: (status, qty, unit) => `${status || "Not set"} / Free stock ${qty ?? 0}${unit}`,
+    deliveryAllowed: "Available delivery days",
+    leadDays: "Minimum lead time",
+    days: "day(s)",
+    weekdays: ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"],
+    chooseDeliveryDate: "Please select a requested delivery date.",
+    invalidDate: "Invalid date format.",
+    minDeliveryDate: (date) => `The earliest delivery date is ${date}.`,
+    weekdayUnavailable: "Delivery is not available on this weekday.",
+    noDeliveryDate: "This date is set as unavailable for delivery.",
+    noItemError: "No product selected. Please enter quantity.",
+    thankYou: "Thank you for your order.",
+    accepted: "We have received the following order.",
+    deliveryDateLabel: "Requested delivery date",
+    deliveryTimeLabel: "Time slot",
+    productSubtotalLabel: "Product subtotal",
+    shippingLabel: "Shipping fee",
+    totalLabel: "Total",
+    noteLabel: "Notes",
+    contactAfterStock: "We will confirm stock and contact you with the final confirmation.",
+    language: "日本語"
+  }
+};
+
+function getInitialLanguage() {
+  const params = new URLSearchParams(window.location.search);
+  const lang = params.get("lang");
+  if (lang === "en" || lang === "ja") return lang;
+
+  const saved = window.localStorage.getItem("lineOrderLang");
+  if (saved === "en" || saved === "ja") return saved;
+
+  return "ja";
+}
+
+
+
 function getCustomerIdFromUrl() {
   const params = new URLSearchParams(window.location.search);
   return params.get("customerId") || "CUST-A";
@@ -65,37 +212,36 @@ function getMinDeliveryDate(customer) {
   return formatDateKey(d);
 }
 
-function isDeliveryDateAllowed(customer, dateText) {
-  if (!dateText) return { ok: false, reason: "納品希望日を選択してください。" };
+function isDeliveryDateAllowed(customer, dateText, t) {
+  if (!dateText) return { ok: false, reason: t.chooseDeliveryDate };
 
   const settings = customer?.deliverySettings || {};
   const date = new Date(`${dateText}T00:00:00`);
-  if (Number.isNaN(date.getTime())) return { ok: false, reason: "日付形式が正しくありません。" };
+  if (Number.isNaN(date.getTime())) return { ok: false, reason: t.invalidDate };
 
   const minDateText = getMinDeliveryDate(customer);
   if (dateText < minDateText) {
-    return { ok: false, reason: `最短納品日は${minDateText}以降です。` };
+    return { ok: false, reason: t.minDeliveryDate(minDateText) };
   }
 
   const allowedWeekdays = settings.allowedWeekdays || [1, 2, 3, 4, 5];
   if (!allowedWeekdays.includes(date.getDay())) {
-    return { ok: false, reason: "この曜日は配送不可です。" };
+    return { ok: false, reason: t.weekdayUnavailable };
   }
 
   const noDeliveryDates = settings.noDeliveryDates || [];
   if (noDeliveryDates.includes(dateText)) {
-    return { ok: false, reason: "この日は配送不可日に設定されています。" };
+    return { ok: false, reason: t.noDeliveryDate };
   }
 
   return { ok: true, reason: "" };
 }
 
-function getDeliveryRuleText(customer) {
+function getDeliveryRuleText(customer, t) {
   const settings = customer?.deliverySettings || {};
-  const names = ["日", "月", "火", "水", "木", "金", "土"];
-  const allowed = (settings.allowedWeekdays || [1, 2, 3, 4, 5]).map((d) => names[d]).join("・");
+  const allowed = (settings.allowedWeekdays || [1, 2, 3, 4, 5]).map((d) => t.weekdays[d]).join("・");
   const leadDays = Number(settings.leadDays || 1);
-  return `配送可能曜日：${allowed} / 最短リード：${leadDays}日`;
+  return `${t.deliveryAllowed}: ${allowed} / ${t.leadDays}: ${leadDays}${t.days}`;
 }
 
 function getTomorrowIso() {
@@ -110,32 +256,35 @@ function getRelativeDate(days) {
   return d.toISOString().slice(0, 10);
 }
 
-function buildOrderMessage(order) {
+function buildOrderMessage(order, t) {
   const lines = order.items.map((item) => {
-    return `・${item.name}：${item.quantity}${item.unit}`;
+    return `・${item.name}: ${item.quantity}${item.unit}`;
   });
 
   return [
-    "ご注文ありがとうございます。",
-    "下記内容で受付しました。",
+    t.thankYou,
+    t.accepted,
     "",
     ...lines,
     "",
-    `納品希望日：${order.deliveryDate}`,
-    `時間帯：${order.deliveryTime}`,
+    `${t.deliveryDateLabel}: ${order.deliveryDate}`,
+    `${t.deliveryTimeLabel}: ${order.deliveryTime}`,
     "",
-    `商品小計：${formatJPY(order.productSubtotal || 0)}`,
-    `送料：${formatJPY(order.shippingFee || 0)}`,
-    `合計：${formatJPY(order.totalAmount || 0)}`,
-    order.note ? `備考：${order.note}` : "",
+    `${t.productSubtotalLabel}: ${formatJPY(order.productSubtotal || 0)}`,
+    `${t.shippingLabel}: ${formatJPY(order.shippingFee || 0)}`,
+    `${t.totalLabel}: ${formatJPY(order.totalAmount || 0)}`,
+    order.note ? `${t.noteLabel}: ${order.note}` : "",
     "",
-    "在庫確認後、確定連絡いたします。"
+    t.contactAfterStock
   ]
     .filter(Boolean)
     .join("\n");
 }
 
 export default function App() {
+  const [lang, setLang] = useState(getInitialLanguage());
+  const t = translations[lang];
+
   const [profile, setProfile] = useState({
     userId: "demo-user-001",
     displayName: "A商店",
@@ -278,16 +427,22 @@ export default function App() {
     setScreen("order");
   }
 
+  function toggleLanguage() {
+    const next = lang === "ja" ? "en" : "ja";
+    setLang(next);
+    window.localStorage.setItem("lineOrderLang", next);
+  }
+
   async function submitOrder() {
     if (orderItems.length === 0) {
       setSubmitResult({
         ok: false,
-        message: "商品が選択されていません。数量を入力してください。"
+        message: t.noItemError
       });
       return;
     }
 
-    const deliveryCheck = isDeliveryDateAllowed(customer, deliveryDate);
+    const deliveryCheck = isDeliveryDateAllowed(customer, deliveryDate, t);
     if (!deliveryCheck.ok) {
       setDeliveryDateError(deliveryCheck.reason);
       setSubmitResult({
@@ -348,7 +503,7 @@ export default function App() {
         deliveryDate,
         deliveryTime,
         items: orderItems
-      });
+      }, t);
 
       if (!DEMO_MODE && LIFF_ID && liff.isInClient() && liff.isApiAvailable("sendMessages")) {
         await liff.sendMessages([{ type: "text", text: message }]);
@@ -382,10 +537,13 @@ export default function App() {
     <div className="app-shell">
       <header className="topbar">
         <div>
-          <p className="eyebrow">LINE発注ミニアプリ</p>
-          <h1>{customer.customerName || profile.displayName || "取引先"} 様</h1>
+          <p className="eyebrow">{t.appTitle}</p>
+          <h1>{customer.customerName || profile.displayName || "Customer"}{t.customerSuffix}</h1>
         </div>
-        <div className="pill">{productSource === "master" ? "MASTER" : (DEMO_MODE ? "DEMO" : "LIFF")}</div>
+        <div className="top-actions">
+          <button type="button" className="lang-toggle" onClick={toggleLanguage}>{t.language}</button>
+          <div className="pill">{productSource === "master" ? t.master : (DEMO_MODE ? t.demo : "LIFF")}</div>
+        </div>
       </header>
 
       {liffError && (
@@ -398,44 +556,44 @@ export default function App() {
       {productSource === "master" && (
         <div className="notice success">
           <CheckCircle2 size={18} />
-          <span>{customer.customerName} 専用の商品・価格を読み込みました。顧客ID: {customerId}</span>
+          <span>{t.loadedMaster(customer.customerName, customerId)}</span>
         </div>
       )}
 
       {productSource === "master" && (
         <div className="notice info">
           <AlertCircle size={18} />
-          <span>{getDeliveryRuleText(customer)}</span>
+          <span>{getDeliveryRuleText(customer, t)}</span>
         </div>
       )}
 
       {productError && (
         <div className="notice warning">
           <AlertCircle size={18} />
-          <span>{productError} デモ用の商品一覧で表示しています。</span>
+          <span>{productError} {t.fallbackProducts}</span>
         </div>
       )}
 
       <nav className="quick-actions">
         <button type="button" onClick={applyLastOrder}>
           <History size={18} />
-          前回と同じ
+          {t.sameAsLast}
         </button>
         <button type="button" onClick={() => setScreen("order")}>
           <ShoppingCart size={18} />
-          商品選択
+          {t.selectProducts}
         </button>
         <button type="button" onClick={clearOrder}>
           <RotateCcw size={18} />
-          リセット
+          {t.reset}
         </button>
       </nav>
 
       {screen === "order" && (
         <main className="card">
           <section className="section-title">
-            <h2>商品を選択</h2>
-            <p>よく注文する商品を上に表示しています。</p>
+            <h2>{t.chooseProducts}</h2>
+            <p>{t.frequentProducts}</p>
           </section>
 
           <label className="search-box">
@@ -443,13 +601,13 @@ export default function App() {
             <input
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              placeholder="商品名・カテゴリで検索"
+              placeholder={t.searchPlaceholder}
             />
           </label>
 
           <div className="product-list">
             {filteredProducts.length === 0 && (
-              <div className="empty">表示できる商品がありません。商品マスタを確認してください。</div>
+              <div className="empty">{t.noProducts}</div>
             )}
 
             {filteredProducts
@@ -463,12 +621,12 @@ export default function App() {
                       <div>
                         <div className="product-name">
                           {product.name}
-                          {product.frequent && <span>定番</span>}
+                          {product.frequent && <span>{t.frequent}</span>}
                         </div>
                         <p>{product.spec}</p>
                         <strong>{formatJPY(product.price)} / {product.unit}</strong>
                         <div className={`stock-badge ${product.canOrder ? "ok" : "ng"}`}>
-                          {product.stockStatus || "未設定"} / フリー在庫 {product.availableStock ?? 0}{product.unit}
+                          {t.stockFree(product.stockStatus, product.availableStock, product.unit)}
                         </div>
                       </div>
                     </div>
@@ -494,11 +652,11 @@ export default function App() {
 
           <div className="sticky-summary">
             <div>
-              <span>選択中</span>
+              <span>{t.selected}</span>
               <strong>{orderItems.length}商品 / {formatJPY(totalAmount)}</strong>
             </div>
             <button type="button" className="primary" onClick={() => setScreen("confirm")}>
-              注文確認へ
+              {t.orderConfirm}
             </button>
           </div>
         </main>
@@ -507,12 +665,12 @@ export default function App() {
       {screen === "confirm" && (
         <main className="card">
           <section className="section-title">
-            <h2>注文内容確認</h2>
-            <p>納品希望日と時間帯を指定してください。</p>
+            <h2>{t.confirmTitle}</h2>
+            <p>{t.confirmDesc}</p>
           </section>
 
           {orderItems.length === 0 ? (
-            <div className="empty">商品が選択されていません。</div>
+            <div className="empty">{t.noProductSelected}</div>
           ) : (
             <div className="order-lines">
               {orderItems.map((item) => (
@@ -529,7 +687,7 @@ export default function App() {
 
           <div className="form-grid">
             <label>
-              納品希望日
+              {t.deliveryDate}
               <input
                 type="date"
                 value={deliveryDate}
@@ -550,60 +708,60 @@ export default function App() {
                 setDeliveryDate(d);
                 const r = isDeliveryDateAllowed(customer, d);
                 setDeliveryDateError(r.ok ? "" : r.reason);
-              }}>明日</button>
+              }}>{t.tomorrow}</button>
               <button type="button" onClick={() => {
                 const d = getRelativeDate(2);
                 setDeliveryDate(d);
                 const r = isDeliveryDateAllowed(customer, d);
                 setDeliveryDateError(r.ok ? "" : r.reason);
-              }}>明後日</button>
+              }}>{t.dayAfterTomorrow}</button>
               <button type="button" onClick={() => {
                 const d = getRelativeDate(3);
                 setDeliveryDate(d);
                 const r = isDeliveryDateAllowed(customer, d);
                 setDeliveryDateError(r.ok ? "" : r.reason);
-              }}>3日後</button>
+              }}>{t.threeDaysLater}</button>
             </div>
 
             <label>
-              時間帯
+              {t.deliveryTime}
               <select value={deliveryTime} onChange={(e) => setDeliveryTime(e.target.value)}>
-                <option>午前</option>
-                <option>午後</option>
-                <option>指定なし</option>
+                <option value="午前">{t.morning}</option>
+                <option value="午後">{t.afternoon}</option>
+                <option value="指定なし">{t.noPreference}</option>
               </select>
             </label>
 
             <label>
-              備考
+              {t.note}
               <textarea
                 value={note}
                 onChange={(e) => setNote(e.target.value)}
-                placeholder="例：いつもの搬入口へ、欠品時は代替相談希望など"
+                placeholder={t.notePlaceholder}
               />
             </label>
           </div>
 
           <div className="total-box">
             <div className="price-row">
-              <span>商品小計</span>
+              <span>{t.productSubtotal}</span>
               <strong>{formatJPY(productSubtotal)}</strong>
             </div>
             <div className="price-row">
-              <span>送料</span>
+              <span>{t.shippingFee}</span>
               <strong>{formatJPY(shippingFee)}</strong>
             </div>
             {customer.freeShippingLine > 0 && shippingFee > 0 && (
-              <small>送料無料ライン：{formatJPY(customer.freeShippingLine)}</small>
+              <small>{t.freeShippingLine}: {formatJPY(customer.freeShippingLine)}</small>
             )}
             {customer.shippingRule === "都度" && (
-              <small>送料は都度確認です。注文後に担当者より確定連絡します。</small>
+              <small>{t.shippingByCase}</small>
             )}
             <div className="price-row total">
-              <span>合計金額</span>
+              <span>{t.grandTotal}</span>
               <strong>{formatJPY(totalAmount)}</strong>
             </div>
-            <small>実際の請求額は在庫・単価確認後に確定します。</small>
+            <small>{t.finalAmountNote}</small>
           </div>
 
           {submitResult && !submitResult.ok && (
@@ -615,11 +773,11 @@ export default function App() {
 
           <div className="button-row">
             <button type="button" className="secondary" onClick={() => setScreen("order")}>
-              戻る
+              {t.back}
             </button>
             <button type="button" className="primary" disabled={submitting} onClick={submitOrder}>
               <Send size={18} />
-              {submitting ? "送信中..." : "注文を送信"}
+              {submitting ? t.sending : t.submitOrder}
             </button>
           </div>
         </main>
@@ -628,15 +786,15 @@ export default function App() {
       {screen === "done" && (
         <main className="card success-card">
           <CheckCircle2 size={52} />
-          <h2>注文を受付しました</h2>
-          <p>在庫確認後、担当者より確定連絡を行います。</p>
+          <h2>{t.orderReceived}</h2>
+          <p>{t.orderReceivedDesc}</p>
 
           {submitResult?.message && (
             <pre className="message-preview">{submitResult.message}</pre>
           )}
 
           <button type="button" className="primary full" onClick={clearOrder}>
-            新しい注文を作成
+            {t.newOrder}
           </button>
         </main>
       )}
