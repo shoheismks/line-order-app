@@ -1,0 +1,847 @@
+/**
+ * LINE発注ミニアプリ用 Google Apps Script
+ * 商品マスタ管理版
+ *
+ * 方針:
+ * - 商品は「商品マスタ」でのみ管理する
+ * - 注文に含まれる商品IDが商品マスタに存在しない場合、受注登録しない
+ * - 在庫管理は商品マスタを元に作成する
+ * - 自由に商品が在庫登録される挙動を禁止
+ *
+ * 作成・整形されるシート:
+ * - Dashboard
+ * - 商品マスタ
+ * - 受注管理
+ * - 受注明細
+ * - 在庫管理
+ * - 商品別集計
+ * - 設定
+ */
+
+const SHEET_DASHBOARD = "Dashboard";
+const SHEET_PRODUCT_MASTER = "商品マスタ";
+const SHEET_ORDERS = "受注管理";
+const SHEET_DETAILS = "受注明細";
+const SHEET_INVENTORY = "在庫管理";
+const SHEET_PRODUCT_SUMMARY = "商品別集計";
+const SHEET_SETTINGS = "設定";
+
+function doPost(e) {
+  try {
+    setupWorkbook_();
+
+    const payload = JSON.parse(e.postData.contents);
+    const items = payload.items || [];
+
+    const invalidItems = validateOrderItems_(items);
+    if (invalidItems.length > 0) {
+      return ContentService
+        .createTextOutput(JSON.stringify({
+          ok: false,
+          error: "商品マスタに存在しない商品が含まれています。",
+          invalidItems
+        }))
+        .setMimeType(ContentService.MimeType.JSON);
+    }
+
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const orderSheet = ss.getSheetByName(SHEET_ORDERS);
+    const detailSheet = ss.getSheetByName(SHEET_DETAILS);
+
+    const orderId = payload.orderId || `ORD-${Date.now()}`;
+    const orderedAt = payload.orderedAt ? new Date(payload.orderedAt) : new Date();
+
+    orderSheet.appendRow([
+      orderId,
+      orderedAt,
+      payload.customer?.lineUserId || "",
+      payload.customer?.displayName || "",
+      payload.deliveryDate || "",
+      payload.deliveryTime || "",
+      payload.note || "",
+      payload.totalAmount || 0,
+      "未処理",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "未確認",
+      new Date()
+    ]);
+
+    const productMap = getProductMasterMap_();
+
+    items.forEach((item) => {
+      const master = productMap[item.productId];
+
+      detailSheet.appendRow([
+        orderId,
+        orderedAt,
+        payload.customer?.displayName || "",
+        master.productId,
+        master.productName,
+        master.spec,
+        item.quantity || 0,
+        master.unit,
+        master.unitPrice || item.unitPrice || 0,
+        (item.quantity || 0) * (master.unitPrice || item.unitPrice || 0),
+        "未処理"
+      ]);
+    });
+
+    syncInventoryFromProductMaster_();
+    refreshInventoryFormulas_();
+    formatWorkbook_();
+
+    return ContentService
+      .createTextOutput(JSON.stringify({ ok: true, orderId }))
+      .setMimeType(ContentService.MimeType.JSON);
+
+  } catch (error) {
+    return ContentService
+      .createTextOutput(JSON.stringify({ ok: false, error: error.message }))
+      .setMimeType(ContentService.MimeType.JSON);
+  }
+}
+
+function doGet(e) {
+  setupWorkbook_();
+
+  const action = e && e.parameter && e.parameter.action;
+  const callback = e && e.parameter && e.parameter.callback;
+
+  if (action === "products") {
+    const products = getActiveProductsForApp_();
+    const json = JSON.stringify({ ok: true, products });
+
+    // ブラウザ側のCORS回避用。callback指定がある場合はJSONPとして返す。
+    if (callback) {
+      return ContentService
+        .createTextOutput(`${callback}(${json});`)
+        .setMimeType(ContentService.MimeType.JAVASCRIPT);
+    }
+
+    return ContentService
+      .createTextOutput(json)
+      .setMimeType(ContentService.MimeType.JSON);
+  }
+
+  return ContentService
+    .createTextOutput("LINE order app endpoint is running.")
+    .setMimeType(ContentService.MimeType.TEXT);
+}
+
+/**
+ * Apps Script画面で手動実行する初期化関数
+ */
+function initializeWorkbook() {
+  setupWorkbook_();
+}
+
+/**
+ * 商品マスタと在庫管理を同期する手動実行用関数
+ * 商品マスタを編集したあとに実行してください。
+ */
+function syncProductMasterToInventory() {
+  setupWorkbook_();
+  syncInventoryFromProductMaster_();
+  refreshInventoryFormulas_();
+  formatWorkbook_();
+}
+
+/**
+ * 全体初期化
+ */
+function setupWorkbook_() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+
+  getOrCreateSheet_(ss, SHEET_SETTINGS, [
+    ["ステータス"],
+    ["未処理"],
+    ["確認済"],
+    ["出荷待ち"],
+    ["出荷済"],
+    ["キャンセル"],
+    [""],
+    ["在庫確認"],
+    ["未確認"],
+    ["在庫OK"],
+    ["一部欠品"],
+    ["欠品"],
+    [""],
+    ["時間帯"],
+    ["午前"],
+    ["午後"],
+    ["指定なし"],
+    [""],
+    ["在庫ステータス"],
+    ["在庫OK"],
+    ["要確認"],
+    ["不足"],
+    ["未設定"],
+    [""],
+    ["商品ステータス"],
+    ["有効"],
+    ["停止"]
+  ]);
+
+  getOrCreateSheet_(ss, SHEET_PRODUCT_MASTER, [
+    [
+      "商品ID",
+      "商品名",
+      "規格",
+      "単位",
+      "単価",
+      "カテゴリ",
+      "定番表示",
+      "初期在庫",
+      "入庫予定",
+      "ファーム",
+      "出荷済",
+      "安全在庫",
+      "商品ステータス",
+      "備考"
+    ],
+    ["BACON-45", "JONES ベーコン", "4.5kg / case", "cs", 18200, "加工肉", true, 100, 0, 0, 0, 10, "有効", ""],
+    ["PATTY-5K", "ビーフパティ 6mm", "5kg / case", "cs", 10550, "加工肉", true, 80, 0, 0, 0, 10, "有効", ""],
+    ["PICKLE-5G", "ナチュラルピクルス 5gal", "5gal / pail", "pail", 10200, "ピクルス", true, 50, 0, 0, 0, 5, "有効", ""],
+    ["PICKLE-2G", "ナチュラルピクルス 2gal", "2gal / pail", "pail", 5800, "ピクルス", false, 30, 0, 0, 0, 5, "有効", ""],
+    ["LINKS-20", "ソーセージリンクス 20pc", "20pc / pack", "pack", 815, "加工肉", true, 120, 0, 0, 0, 20, "有効", ""],
+    ["LINKS-200", "ソーセージリンクス 200pc", "200pc / case", "cs", 5800, "加工肉", false, 40, 0, 0, 0, 5, "有効", ""],
+    ["BUNS-CASE", "バンズ", "case", "cs", 7500, "パン", true, 60, 0, 0, 0, 10, "有効", ""]
+  ]);
+
+  getOrCreateSheet_(ss, SHEET_ORDERS, [[
+    "受注ID",
+    "受注日時",
+    "LINEユーザーID",
+    "取引先名",
+    "納品希望日",
+    "時間帯",
+    "備考",
+    "合計金額",
+    "ステータス",
+    "担当者",
+    "出荷予定日",
+    "配送方法",
+    "送り状番号",
+    "社内メモ",
+    "在庫確認",
+    "更新日時"
+  ]]);
+
+  getOrCreateSheet_(ss, SHEET_DETAILS, [[
+    "受注ID",
+    "受注日時",
+    "取引先名",
+    "商品ID",
+    "商品名",
+    "規格",
+    "数量",
+    "単位",
+    "単価",
+    "小計",
+    "明細ステータス"
+  ]]);
+
+  getOrCreateSheet_(ss, SHEET_INVENTORY, [[
+    "商品ID",
+    "商品名",
+    "規格",
+    "単位",
+    "初期在庫",
+    "入庫予定",
+    "ファーム",
+    "受注済",
+    "出荷済",
+    "フリー在庫",
+    "安全在庫",
+    "在庫ステータス",
+    "最終受注日",
+    "備考"
+  ]]);
+
+  getOrCreateSheet_(ss, SHEET_DASHBOARD, [
+    ["LINE発注管理 Dashboard", "", "", ""],
+    ["総受注件数", "", "未処理件数", ""],
+    ["本日受注件数", "", "当月受注金額", ""],
+    ["出荷待ち件数", "", "欠品・一部欠品", ""],
+    ["在庫不足商品数", "", "要確認商品数", ""],
+    ["有効商品数", "", "停止商品数", ""],
+    ["", "", "", ""],
+    ["ステータス別件数", "", "", ""],
+    ["ステータス", "件数", "", ""],
+    ["未処理", "", "", ""],
+    ["確認済", "", "", ""],
+    ["出荷待ち", "", "", ""],
+    ["出荷済", "", "", ""],
+    ["キャンセル", "", "", ""]
+  ]);
+
+  getOrCreateSheet_(ss, SHEET_PRODUCT_SUMMARY, [
+    ["商品別集計", "", "", ""],
+    ["商品名", "数量合計", "売上合計", "最終受注日"]
+  ]);
+
+  syncInventoryFromProductMaster_();
+  setDashboardFormulas_();
+  setProductSummaryFormulas_();
+  refreshInventoryFormulas_();
+  setValidations_();
+  formatWorkbook_();
+}
+
+/**
+ * 注文商品が商品マスタに存在するかチェック
+ */
+function validateOrderItems_(items) {
+  const productMap = getProductMasterMap_();
+  const invalidItems = [];
+
+  items.forEach((item) => {
+    const productId = item.productId || "";
+    const master = productMap[productId];
+
+    if (!master) {
+      invalidItems.push({
+        productId,
+        name: item.name || "",
+        reason: "商品マスタ未登録"
+      });
+      return;
+    }
+
+    if (master.status !== "有効") {
+      invalidItems.push({
+        productId,
+        name: master.productName,
+        reason: "商品ステータスが有効ではありません"
+      });
+    }
+  });
+
+  return invalidItems;
+}
+
+/**
+ * 商品マスタをMap化
+ */
+function getProductMasterMap_() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sh = ss.getSheetByName(SHEET_PRODUCT_MASTER);
+  const lastRow = sh.getLastRow();
+  const map = {};
+
+  if (lastRow < 2) return map;
+
+  const values = sh.getRange(2, 1, lastRow - 1, 14).getValues();
+
+  values.forEach((row) => {
+    const productId = row[0];
+    if (!productId) return;
+
+    map[productId] = {
+      productId: row[0],
+      productName: row[1],
+      spec: row[2],
+      unit: row[3],
+      unitPrice: Number(row[4] || 0),
+      category: row[5],
+      frequent: row[6],
+      initialStock: Number(row[7] || 0),
+      incomingStock: Number(row[8] || 0),
+      firmStock: Number(row[9] || 0),
+      shippedStock: Number(row[10] || 0),
+      safetyStock: Number(row[11] || 0),
+      status: row[12] || "有効",
+      note: row[13] || ""
+    };
+  });
+
+  return map;
+}
+
+
+/**
+ * アプリ表示用の商品一覧を商品マスタから取得
+ * 商品ステータス「有効」のみ返します。
+ */
+function getActiveProductsForApp_() {
+  const productMap = getProductMasterMap_();
+
+  return Object.keys(productMap)
+    .map((key) => productMap[key])
+    .filter((product) => product.status === "有効")
+    .map((product) => ({
+      id: product.productId,
+      name: product.productName,
+      spec: product.spec,
+      unit: product.unit,
+      price: product.unitPrice,
+      category: product.category,
+      frequent: product.frequent === true || String(product.frequent).toLowerCase() === "true"
+    }));
+}
+
+/**
+ * 商品マスタを在庫管理に同期
+ * 在庫管理に勝手に商品を増やすのではなく、商品マスタを唯一の正とする
+ */
+function syncInventoryFromProductMaster_() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const masterSheet = ss.getSheetByName(SHEET_PRODUCT_MASTER);
+  const inventorySheet = ss.getSheetByName(SHEET_INVENTORY);
+
+  const masterLastRow = masterSheet.getLastRow();
+  if (masterLastRow < 2) return;
+
+  const masterValues = masterSheet.getRange(2, 1, masterLastRow - 1, 14).getValues();
+
+  const existingLastRow = inventorySheet.getLastRow();
+  const existingMap = {};
+  if (existingLastRow >= 2) {
+    const existingValues = inventorySheet.getRange(2, 1, existingLastRow - 1, 14).getValues();
+    existingValues.forEach((row) => {
+      if (row[0]) {
+        existingMap[row[0]] = row;
+      }
+    });
+  }
+
+  if (existingLastRow >= 2) {
+    inventorySheet.getRange(2, 1, existingLastRow - 1, 14).clearContent();
+  }
+
+  const inventoryRows = masterValues
+    .filter((row) => row[0])
+    .map((row) => {
+      const productId = row[0];
+      const existing = existingMap[productId] || [];
+
+      return [
+        productId,
+        row[1],                              // 商品名
+        row[2],                              // 規格
+        row[3],                              // 単位
+        row[7] || existing[4] || 0,           // 初期在庫
+        row[8] || existing[5] || 0,           // 入庫予定
+        row[9] || existing[6] || 0,           // ファーム
+        "",                                  // 受注済 数式
+        row[10] || existing[8] || 0,          // 出荷済
+        "",                                  // フリー在庫 数式
+        row[11] || existing[10] || 0,         // 安全在庫
+        "",                                  // 在庫ステータス 数式
+        "",                                  // 最終受注日 数式
+        row[13] || existing[13] || ""         // 備考
+      ];
+    });
+
+  if (inventoryRows.length > 0) {
+    inventorySheet.getRange(2, 1, inventoryRows.length, 14).setValues(inventoryRows);
+  }
+}
+
+/**
+ * Dashboard数式
+ */
+function setDashboardFormulas_() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sh = ss.getSheetByName(SHEET_DASHBOARD);
+
+  sh.getRange("B2").setFormula(`=COUNTA('${SHEET_ORDERS}'!A2:A)`);
+  sh.getRange("D2").setFormula(`=COUNTIF('${SHEET_ORDERS}'!I2:I,"未処理")`);
+  sh.getRange("B3").setFormula(`=COUNTIFS('${SHEET_ORDERS}'!B2:B,">="&TODAY(),'${SHEET_ORDERS}'!B2:B,"<"&TODAY()+1)`);
+  sh.getRange("D3").setFormula(`=SUMIFS('${SHEET_ORDERS}'!H2:H,'${SHEET_ORDERS}'!B2:B,">="&EOMONTH(TODAY(),-1)+1,'${SHEET_ORDERS}'!B2:B,"<"&EOMONTH(TODAY(),0)+1)`);
+  sh.getRange("B4").setFormula(`=COUNTIF('${SHEET_ORDERS}'!I2:I,"出荷待ち")`);
+  sh.getRange("D4").setFormula(`=COUNTIF('${SHEET_ORDERS}'!O2:O,"一部欠品")+COUNTIF('${SHEET_ORDERS}'!O2:O,"欠品")`);
+  sh.getRange("B5").setFormula(`=COUNTIF('${SHEET_INVENTORY}'!L2:L,"不足")`);
+  sh.getRange("D5").setFormula(`=COUNTIF('${SHEET_INVENTORY}'!L2:L,"要確認")`);
+  sh.getRange("B6").setFormula(`=COUNTIF('${SHEET_PRODUCT_MASTER}'!M2:M,"有効")`);
+  sh.getRange("D6").setFormula(`=COUNTIF('${SHEET_PRODUCT_MASTER}'!M2:M,"停止")`);
+
+  sh.getRange("B10").setFormula(`=COUNTIF('${SHEET_ORDERS}'!I2:I,A10)`);
+  sh.getRange("B11").setFormula(`=COUNTIF('${SHEET_ORDERS}'!I2:I,A11)`);
+  sh.getRange("B12").setFormula(`=COUNTIF('${SHEET_ORDERS}'!I2:I,A12)`);
+  sh.getRange("B13").setFormula(`=COUNTIF('${SHEET_ORDERS}'!I2:I,A13)`);
+  sh.getRange("B14").setFormula(`=COUNTIF('${SHEET_ORDERS}'!I2:I,A14)`);
+}
+
+/**
+ * 商品別集計数式
+ */
+function setProductSummaryFormulas_() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sh = ss.getSheetByName(SHEET_PRODUCT_SUMMARY);
+
+  sh.getRange("A3").setFormula(`=SORT(UNIQUE(FILTER('${SHEET_DETAILS}'!E2:E,'${SHEET_DETAILS}'!E2:E<>"")))`);
+  sh.getRange("B3").setFormula(`=ARRAYFORMULA(IF(A3:A="","",SUMIF('${SHEET_DETAILS}'!E:E,A3:A,'${SHEET_DETAILS}'!G:G)))`);
+  sh.getRange("C3").setFormula(`=ARRAYFORMULA(IF(A3:A="","",SUMIF('${SHEET_DETAILS}'!E:E,A3:A,'${SHEET_DETAILS}'!J:J)))`);
+  sh.getRange("D3").setFormula(`=ARRAYFORMULA(IF(A3:A="","",MAXIFS('${SHEET_DETAILS}'!B:B,'${SHEET_DETAILS}'!E:E,A3:A)))`);
+}
+
+/**
+ * 在庫管理数式更新
+ */
+function refreshInventoryFormulas_() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sh = ss.getSheetByName(SHEET_INVENTORY);
+  if (!sh) return;
+
+  // L列「在庫ステータス」は数式で自動判定するため、既存の入力規則を削除
+  sh.getRange("L2:L1000").clearDataValidations();
+
+  const lastRow = Math.max(sh.getLastRow(), 2);
+  if (lastRow < 2) return;
+
+  for (let row = 2; row <= lastRow; row++) {
+    const productId = sh.getRange(row, 1).getValue();
+    if (!productId) continue;
+
+    sh.getRange(row, 8).setFormula(
+      `=SUMIFS('${SHEET_DETAILS}'!G:G,'${SHEET_DETAILS}'!D:D,A${row},'${SHEET_DETAILS}'!K:K,"<>キャンセル")`
+    );
+
+    sh.getRange(row, 10).setFormula(
+      `=E${row}+F${row}-G${row}-H${row}-I${row}`
+    );
+
+    sh.getRange(row, 12).setFormula(
+      `=IF(E${row}+F${row}=0,"未設定",IF(J${row}<0,"不足",IF(J${row}<=K${row},"要確認","在庫OK")))`
+    );
+
+    sh.getRange(row, 13).setFormula(
+      `=IFERROR(MAXIFS('${SHEET_DETAILS}'!B:B,'${SHEET_DETAILS}'!D:D,A${row}),"")`
+    );
+  }
+}
+
+/**
+ * プルダウン設定
+ */
+function setValidations_() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const orderSheet = ss.getSheetByName(SHEET_ORDERS);
+  const detailSheet = ss.getSheetByName(SHEET_DETAILS);
+  const inventorySheet = ss.getSheetByName(SHEET_INVENTORY);
+  const masterSheet = ss.getSheetByName(SHEET_PRODUCT_MASTER);
+  const settingsSheet = ss.getSheetByName(SHEET_SETTINGS);
+
+  const statusRule = SpreadsheetApp.newDataValidation()
+    .requireValueInRange(settingsSheet.getRange("A2:A6"), true)
+    .setAllowInvalid(false)
+    .build();
+
+  const stockCheckRule = SpreadsheetApp.newDataValidation()
+    .requireValueInRange(settingsSheet.getRange("A9:A12"), true)
+    .setAllowInvalid(false)
+    .build();
+
+  const productStatusRule = SpreadsheetApp.newDataValidation()
+    .requireValueInRange(settingsSheet.getRange("A26:A27"), true)
+    .setAllowInvalid(false)
+    .build();
+
+  orderSheet.getRange("I2:I1000").setDataValidation(statusRule);
+  orderSheet.getRange("O2:O1000").setDataValidation(stockCheckRule);
+  detailSheet.getRange("K2:K1000").setDataValidation(statusRule);
+  // 在庫管理 L列「在庫ステータス」は数式列のため、入力規則を設定しない
+  inventorySheet.getRange("L2:L1000").clearDataValidations();
+  masterSheet.getRange("M2:M1000").setDataValidation(productStatusRule);
+}
+
+/**
+ * 全体整形
+ */
+function formatWorkbook_() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+
+  formatDashboard_(ss.getSheetByName(SHEET_DASHBOARD));
+  formatProductMaster_(ss.getSheetByName(SHEET_PRODUCT_MASTER));
+  formatOrders_(ss.getSheetByName(SHEET_ORDERS));
+  formatDetails_(ss.getSheetByName(SHEET_DETAILS));
+  formatInventory_(ss.getSheetByName(SHEET_INVENTORY));
+  formatProductSummary_(ss.getSheetByName(SHEET_PRODUCT_SUMMARY));
+  formatSettings_(ss.getSheetByName(SHEET_SETTINGS));
+}
+
+function formatDashboard_(sh) {
+  if (!sh) return;
+
+  sh.setFrozenRows(1);
+  sh.getRange("A1:D1").merge();
+  sh.getRange("A1")
+    .setBackground("#1F4E79")
+    .setFontColor("#FFFFFF")
+    .setFontWeight("bold")
+    .setFontSize(16)
+    .setHorizontalAlignment("center");
+
+  sh.getRange("A2:D6")
+    .setBackground("#EAF3F8")
+    .setBorder(true, true, true, true, true, true);
+
+  sh.getRange("A2:A6").setFontWeight("bold");
+  sh.getRange("C2:C6").setFontWeight("bold");
+  sh.getRange("B2:B6").setFontSize(14).setFontWeight("bold").setHorizontalAlignment("right");
+  sh.getRange("D2:D6").setFontSize(14).setFontWeight("bold").setHorizontalAlignment("right");
+  sh.getRange("D3").setNumberFormat("¥#,##0");
+
+  sh.getRange("A8:B8")
+    .setBackground("#1F4E79")
+    .setFontColor("#FFFFFF")
+    .setFontWeight("bold");
+  sh.getRange("A9:B14").setBorder(true, true, true, true, true, true);
+  sh.getRange("A9:B9").setBackground("#D9EAF7").setFontWeight("bold");
+
+  sh.setColumnWidths(1, 4, 150);
+  sh.setRowHeights(1, 14, 28);
+}
+
+function formatProductMaster_(sh) {
+  if (!sh) return;
+
+  sh.setFrozenRows(1);
+  sh.setFrozenColumns(2);
+
+  const lastCol = 14;
+  sh.getRange(1, 1, 1, lastCol)
+    .setBackground("#B45309")
+    .setFontColor("#FFFFFF")
+    .setFontWeight("bold")
+    .setHorizontalAlignment("center");
+
+  sh.getRange("E:E").setNumberFormat("¥#,##0");
+  sh.getRange("H:L").setNumberFormat("#,##0");
+  sh.getRange("A1:N1000").setBorder(true, true, true, true, true, true, "#E5E7EB", SpreadsheetApp.BorderStyle.SOLID);
+
+  const widths = [120,200,160,80,100,120,90,90,90,90,90,90,110,220];
+  widths.forEach((w, i) => sh.setColumnWidth(i + 1, w));
+
+  applyProductMasterConditionalFormatting_(sh);
+}
+
+function formatOrders_(sh) {
+  if (!sh) return;
+
+  sh.setFrozenRows(1);
+  sh.setFrozenColumns(1);
+
+  const lastCol = 16;
+  sh.getRange(1, 1, 1, lastCol)
+    .setBackground("#0F766E")
+    .setFontColor("#FFFFFF")
+    .setFontWeight("bold")
+    .setHorizontalAlignment("center")
+    .setVerticalAlignment("middle");
+
+  sh.getRange("A:P").setVerticalAlignment("middle");
+  sh.getRange("B:B").setNumberFormat("yyyy-mm-dd hh:mm");
+  sh.getRange("E:E").setNumberFormat("yyyy-mm-dd");
+  sh.getRange("H:H").setNumberFormat("¥#,##0");
+  sh.getRange("K:K").setNumberFormat("yyyy-mm-dd");
+  sh.getRange("P:P").setNumberFormat("yyyy-mm-dd hh:mm");
+
+  const widths = [160,140,180,140,110,90,220,110,100,100,110,120,150,220,110,140];
+  widths.forEach((w, i) => sh.setColumnWidth(i + 1, w));
+
+  sh.getRange("A1:P1000").setBorder(true, true, true, true, true, true, "#D9E2EC", SpreadsheetApp.BorderStyle.SOLID);
+  sh.getRange("A2:P1000").setWrap(true);
+
+  applyOrderConditionalFormatting_(sh);
+}
+
+function formatDetails_(sh) {
+  if (!sh) return;
+
+  sh.setFrozenRows(1);
+  sh.setFrozenColumns(1);
+
+  const lastCol = 11;
+  sh.getRange(1, 1, 1, lastCol)
+    .setBackground("#374151")
+    .setFontColor("#FFFFFF")
+    .setFontWeight("bold")
+    .setHorizontalAlignment("center");
+
+  sh.getRange("B:B").setNumberFormat("yyyy-mm-dd hh:mm");
+  sh.getRange("G:G").setNumberFormat("#,##0");
+  sh.getRange("I:J").setNumberFormat("¥#,##0");
+
+  const widths = [160,140,140,120,180,160,80,80,100,100,110];
+  widths.forEach((w, i) => sh.setColumnWidth(i + 1, w));
+
+  sh.getRange("A1:K1000").setBorder(true, true, true, true, true, true, "#E5E7EB", SpreadsheetApp.BorderStyle.SOLID);
+}
+
+function formatInventory_(sh) {
+  if (!sh) return;
+
+  sh.setFrozenRows(1);
+  sh.setFrozenColumns(2);
+
+  const lastCol = 14;
+  sh.getRange(1, 1, 1, lastCol)
+    .setBackground("#7C3AED")
+    .setFontColor("#FFFFFF")
+    .setFontWeight("bold")
+    .setHorizontalAlignment("center");
+
+  sh.getRange("E:K").setNumberFormat("#,##0");
+  sh.getRange("M:M").setNumberFormat("yyyy-mm-dd hh:mm");
+  sh.getRange("A1:N1000").setBorder(true, true, true, true, true, true, "#E5E7EB", SpreadsheetApp.BorderStyle.SOLID);
+  sh.getRange("A2:N1000").setWrap(true);
+
+  const widths = [120,200,160,80,90,90,90,90,90,100,90,120,140,220];
+  widths.forEach((w, i) => sh.setColumnWidth(i + 1, w));
+
+  applyInventoryConditionalFormatting_(sh);
+}
+
+function formatProductSummary_(sh) {
+  if (!sh) return;
+
+  sh.getRange("A1:D1").merge();
+  sh.getRange("A1")
+    .setBackground("#1F4E79")
+    .setFontColor("#FFFFFF")
+    .setFontWeight("bold")
+    .setFontSize(14)
+    .setHorizontalAlignment("center");
+
+  sh.getRange("A2:D2")
+    .setBackground("#D9EAF7")
+    .setFontWeight("bold")
+    .setHorizontalAlignment("center");
+
+  sh.getRange("B:B").setNumberFormat("#,##0");
+  sh.getRange("C:C").setNumberFormat("¥#,##0");
+  sh.getRange("D:D").setNumberFormat("yyyy-mm-dd");
+
+  sh.setColumnWidth(1, 220);
+  sh.setColumnWidth(2, 100);
+  sh.setColumnWidth(3, 120);
+  sh.setColumnWidth(4, 130);
+}
+
+function formatSettings_(sh) {
+  if (!sh) return;
+
+  sh.getRange("A1:A1").setBackground("#0F766E").setFontColor("#FFFFFF").setFontWeight("bold");
+  sh.getRange("A8:A8").setBackground("#0F766E").setFontColor("#FFFFFF").setFontWeight("bold");
+  sh.getRange("A14:A14").setBackground("#0F766E").setFontColor("#FFFFFF").setFontWeight("bold");
+  sh.getRange("A19:A19").setBackground("#0F766E").setFontColor("#FFFFFF").setFontWeight("bold");
+  sh.getRange("A25:A25").setBackground("#0F766E").setFontColor("#FFFFFF").setFontWeight("bold");
+  sh.setColumnWidth(1, 150);
+}
+
+function applyProductMasterConditionalFormatting_(sh) {
+  const range = sh.getRange("A2:N1000");
+  const rules = [];
+
+  rules.push(SpreadsheetApp.newConditionalFormatRule()
+    .whenFormulaSatisfied('=$M2="停止"')
+    .setBackground("#E7E6E6")
+    .setFontColor("#999999")
+    .setRanges([range])
+    .build());
+
+  rules.push(SpreadsheetApp.newConditionalFormatRule()
+    .whenFormulaSatisfied('=$M2="有効"')
+    .setBackground("#FFFFFF")
+    .setRanges([range])
+    .build());
+
+  sh.setConditionalFormatRules(rules);
+}
+
+function applyOrderConditionalFormatting_(sh) {
+  const range = sh.getRange("A2:P1000");
+  const rules = [];
+
+  rules.push(SpreadsheetApp.newConditionalFormatRule()
+    .whenFormulaSatisfied('=$I2="未処理"')
+    .setBackground("#FFF2CC")
+    .setRanges([range])
+    .build());
+
+  rules.push(SpreadsheetApp.newConditionalFormatRule()
+    .whenFormulaSatisfied('=$I2="確認済"')
+    .setBackground("#E2F0D9")
+    .setRanges([range])
+    .build());
+
+  rules.push(SpreadsheetApp.newConditionalFormatRule()
+    .whenFormulaSatisfied('=$I2="出荷待ち"')
+    .setBackground("#DDEBF7")
+    .setRanges([range])
+    .build());
+
+  rules.push(SpreadsheetApp.newConditionalFormatRule()
+    .whenFormulaSatisfied('=$I2="出荷済"')
+    .setBackground("#E7E6E6")
+    .setRanges([range])
+    .build());
+
+  rules.push(SpreadsheetApp.newConditionalFormatRule()
+    .whenFormulaSatisfied('=$I2="キャンセル"')
+    .setBackground("#F4CCCC")
+    .setFontColor("#990000")
+    .setRanges([range])
+    .build());
+
+  rules.push(SpreadsheetApp.newConditionalFormatRule()
+    .whenFormulaSatisfied('=OR($O2="欠品",$O2="一部欠品")')
+    .setFontColor("#C00000")
+    .setBold(true)
+    .setRanges([sh.getRange("O2:O1000")])
+    .build());
+
+  sh.setConditionalFormatRules(rules);
+}
+
+function applyInventoryConditionalFormatting_(sh) {
+  const range = sh.getRange("A2:N1000");
+  const rules = [];
+
+  rules.push(SpreadsheetApp.newConditionalFormatRule()
+    .whenFormulaSatisfied('=$L2="在庫OK"')
+    .setBackground("#E2F0D9")
+    .setRanges([range])
+    .build());
+
+  rules.push(SpreadsheetApp.newConditionalFormatRule()
+    .whenFormulaSatisfied('=$L2="要確認"')
+    .setBackground("#FFF2CC")
+    .setRanges([range])
+    .build());
+
+  rules.push(SpreadsheetApp.newConditionalFormatRule()
+    .whenFormulaSatisfied('=$L2="不足"')
+    .setBackground("#F4CCCC")
+    .setFontColor("#990000")
+    .setBold(true)
+    .setRanges([range])
+    .build());
+
+  rules.push(SpreadsheetApp.newConditionalFormatRule()
+    .whenFormulaSatisfied('=$L2="未設定"')
+    .setBackground("#E7E6E6")
+    .setRanges([range])
+    .build());
+
+  sh.setConditionalFormatRules(rules);
+}
+
+function getOrCreateSheet_(ss, name, initialValues) {
+  let sheet = ss.getSheetByName(name);
+  if (!sheet) {
+    sheet = ss.insertSheet(name);
+  }
+
+  if (sheet.getLastRow() === 0 && initialValues && initialValues.length > 0) {
+    sheet.getRange(1, 1, initialValues.length, initialValues[0].length).setValues(initialValues);
+  }
+
+  return sheet;
+}
